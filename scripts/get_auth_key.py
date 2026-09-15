@@ -24,7 +24,7 @@ ENV_PATH = ROOT / ".env"
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
 
 MAC_RE = re.compile(r"\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})\b")
-KEY_RE = re.compile(r"\b([0-9A-Fa-f]{32})\b")
+KEY_RE = re.compile(r"(?:0x)?([0-9A-Fa-f]{32})\b")
 
 
 def ensure_env_file() -> None:
