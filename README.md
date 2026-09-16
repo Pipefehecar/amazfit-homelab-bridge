@@ -89,6 +89,28 @@ python scripts/read_sensors.py                    # battery + HR once + steps
 python scripts/read_sensors.py --continuous-hr 60  # + 60s of live HR
 ```
 
+## Known issue: watch stops advertising / needs a manual restart
+
+If the watch becomes undetectable by BLE (even to other apps like
+LightBlue) and only a physical restart brings it back, it's very likely
+**not** a hardware/firmware flake — it's a leftover connection.
+
+BLE peripherals with a single connection slot (this watch included) stop
+advertising entirely while a central holds an open connection - normal
+behavior, not a bug. The trap: if the process holding that connection
+gets killed with SIGKILL (`kill -9`, `fuser -k`, a crash) instead of
+shutting down cleanly, the watch's firmware never receives the disconnect
+handshake. It keeps thinking it's connected to a phantom central, stays
+silent, and won't advertise or accept new connections again until it
+times out on its own (can take a long time) or is force-restarted.
+
+**Rule: always stop `uvicorn amazfit_bridge.web:app` with Ctrl+C or a
+plain `kill <pid>` (SIGTERM), never `kill -9` / `fuser -k`.** SIGTERM lets
+FastAPI's `lifespan` shutdown run, which calls `WatchConnection.close()`
+and disconnects properly. This was reproduced firsthand during
+development: repeated `fuser -k` restarts left the watch undetectable
+until it was physically restarted.
+
 ## Step 5 — local web demo
 
 ```bash
