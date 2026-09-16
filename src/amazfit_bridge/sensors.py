@@ -34,6 +34,12 @@ STEPS_CHAR = "00000007-0000-3512-2118-0009af100700"
 HR_MEASUREMENT_CHAR = "00002a37-0000-1000-8000-00805f9b34fb"
 HR_CONTROL_POINT_CHAR = "00002a39-0000-1000-8000-00805f9b34fb"
 
+# Standard BLE Alert Notification Service (0x1811), found in our GATT map
+# under that same 0x1811 service: "New Alert" (0x2A46, read/write, handle=111).
+# This is EXPERIMENTAL - never verified against the watch screen yet.
+NOTIFY_CHAR = "00002a46-0000-1000-8000-00805f9b34fb"
+_ANS_CATEGORY_SIMPLE_ALERT = 0x00
+
 
 @dataclass
 class BatteryStatus:
@@ -147,6 +153,36 @@ def _parse_hr_measurement(raw: bytes) -> int:
     if hr_format_is_uint16:
         return int.from_bytes(raw[1:3], byteorder="little")
     return raw[1] if len(raw) > 1 else 0
+
+
+async def send_notification(client: BleakClient, title: str, body: str) -> bytes:
+    """
+    EXPERIMENTAL - tested against the real GTS 2e, no visible effect.
+
+    Writes to the standard BLE Alert Notification Service's "New Alert"
+    characteristic (0x2A46, under service 0x1811 - both present in our
+    GATT map). Per the Bluetooth SIG spec, the New Alert payload is:
+        [Category ID: 1 byte][Number of New Alerts: 1 byte][Text: UTF-8, variable]
+    We use Category ID 0x00 (Simple Alert) and count=1. The write succeeds
+    with no error (BLE ack), but nothing shows on the watch screen -
+    confirmed by hand twice against the real device. Conclusion: this
+    generic BLE-spec path isn't what Huami firmware listens to for
+    notifications; it likely needs the vendor-specific format (icon id +
+    app package name + text) that Gadgetbridge's HuamiSupport implements
+    over the fee0/fee1 characteristics instead of standard ANS. Left as
+    write-only-no-confirmed-effect rather than removed, so the next pass
+    has a known-bad baseline to diverge from.
+    """
+    text = f"{title}: {body}"
+    payload = bytes([_ANS_CATEGORY_SIMPLE_ALERT, 0x01]) + text.encode("utf-8")
+
+    logger.info("Writing notification to %s", NOTIFY_CHAR)
+    logger.info("Notification raw payload (%d bytes): %s", len(payload), payload.hex())
+
+    await client.write_gatt_char(NOTIFY_CHAR, payload, response=True)
+
+    logger.info("Notification write completed (no exception raised).")
+    return payload
 
 
 async def read_activity_log(client: BleakClient):

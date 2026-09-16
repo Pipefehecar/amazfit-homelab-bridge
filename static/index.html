@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>amazfit-homelab-bridge demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; background: #0f1115; color: #e6e6e6; }
+  h1 { font-size: 1.3rem; }
+  .panel { border: 1px solid #333; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; background: #171a21; }
+  .panel h2 { margin-top: 0; font-size: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+  .badge { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 999px; font-weight: 600; }
+  .badge.confirmed { background: #1f4d2e; color: #7be39a; }
+  .badge.experimental { background: #4d3a1f; color: #e3b97b; }
+  .value { font-size: 1.6rem; font-weight: 700; }
+  .sub { color: #9aa0a8; font-size: 0.85rem; }
+  button { background: #2b6cb0; color: white; border: none; border-radius: 6px; padding: 0.4rem 0.9rem; cursor: pointer; font-size: 0.85rem; }
+  button:hover { background: #2c5282; }
+  button:disabled { background: #444; cursor: not-allowed; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 0.4rem; border-radius: 4px; border: 1px solid #444; background: #0f1115; color: #e6e6e6; margin-bottom: 0.5rem; }
+  .row { display: flex; gap: 0.6rem; align-items: center; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot.near { background: #4ade80; }
+  .dot.far { background: #f87171; }
+  .dot.unknown { background: #6b7280; }
+  #paused-banner { display: none; background: #4d3a1f; color: #e3b97b; padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; }
+  .raw { font-family: monospace; font-size: 0.75rem; color: #7f8791; word-break: break-all; }
+  #notify-status { font-size: 0.85rem; margin-top: 0.4rem; }
+</style>
+</head>
+<body>
+  <h1>amazfit-homelab-bridge — demo local</h1>
+  <div id="paused-banner">⏸ Modo presencia activo o lectura en curso — algunas operaciones pueden esperar por el lock BLE.</div>
+
+  <div class="panel">
+    <h2>Batería <span class="badge confirmed">confirmado</span></h2>
+    <div class="value" id="battery-value">—</div>
+    <div class="sub raw" id="battery-raw"></div>
+    <button onclick="loadBattery()">Refresh</button>
+  </div>
+
+  <div class="panel">
+    <h2>Ritmo cardíaco <span class="badge confirmed">confirmado</span> <span id="hr-live-badge" style="display:none;" class="badge experimental">EN VIVO</span></h2>
+    <div class="value" id="hr-value">—</div>
+    <div class="row">
+      <button onclick="loadHrOnce()">Lectura puntual</button>
+      <button id="hr-live-btn" onclick="toggleHrLive()">Iniciar continuo</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Actividad (pasos) <span class="badge confirmed">confirmado</span></h2>
+    <div class="value" id="steps-value">—</div>
+    <div class="sub" id="activity-sub"></div>
+    <div class="sub raw" id="activity-raw"></div>
+    <button onclick="loadActivity()">Refresh</button>
+  </div>
+
+  <div class="panel">
+    <h2>Presencia (RSSI) <span class="badge experimental">experimental</span></h2>
+    <div class="row">
+      <span class="dot unknown" id="presence-dot"></span>
+      <span class="value" id="presence-value">—</span>
+    </div>
+    <div class="sub" id="presence-sub"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Notificación de prueba <span class="badge experimental">experimental — no funciona aún</span></h2>
+    <div class="sub" style="margin-bottom:0.5rem;">
+      El write llega sin error, pero confirmado en el reloj real: no aparece nada en pantalla.
+      El formato estándar BLE (Alert Notification Service) no es lo que este firmware Huami escucha.
+    </div>
+    <input id="notify-title" placeholder="Título" value="Homelab">
+    <textarea id="notify-body" placeholder="Texto" rows="2">Prueba desde amazfit-homelab-bridge</textarea>
+    <button onclick="sendNotify()">Enviar al reloj (no confirmado)</button>
+    <div id="notify-status"></div>
+  </div>
+
+<script>
+async function loadBattery() {
+  const el = document.getElementById('battery-value');
+  el.textContent = 'cargando...';
+  try {
+    const r = await fetch('/battery');
+    const d = await r.json();
+    el.textContent = `${d.level_percent}%`;
+    document.getElementById('battery-raw').textContent = `raw: ${d.raw_hex}`;
+  } catch (e) {
+    el.textContent = 'error';
+  }
+}
+
+async function loadHrOnce() {
+  const el = document.getElementById('hr-value');
+  el.textContent = 'midiendo... (puede tardar ~20s)';
+  try {
+    const r = await fetch('/hr');
+    const d = await r.json();
+    el.textContent = `${d.bpm} bpm`;
+  } catch (e) {
+    el.textContent = 'error';
+  }
+}
+
+let hrSocket = null;
+function toggleHrLive() {
+  const btn = document.getElementById('hr-live-btn');
+  const badge = document.getElementById('hr-live-badge');
+  if (hrSocket) {
+    hrSocket.close();
+    hrSocket = null;
+    btn.textContent = 'Iniciar continuo';
+    badge.style.display = 'none';
+    return;
+  }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  hrSocket = new WebSocket(`${proto}://${location.host}/ws/hr`);
+  hrSocket.onopen = () => {
+    btn.textContent = 'Detener continuo';
+    badge.style.display = 'inline-block';
+  };
+  hrSocket.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    document.getElementById('hr-value').textContent = `${d.bpm} bpm`;
+  };
+  hrSocket.onclose = () => {
+    hrSocket = null;
+    btn.textContent = 'Iniciar continuo';
+    badge.style.display = 'none';
+  };
+}
+
+async function loadActivity() {
+  const el = document.getElementById('steps-value');
+  el.textContent = 'cargando...';
+  try {
+    const r = await fetch('/activity');
+    const d = await r.json();
+    el.textContent = `${d.steps} pasos`;
+    document.getElementById('activity-sub').textContent = `${d.distance_m} m · ${d.calories} kcal`;
+    document.getElementById('activity-raw').textContent = `raw: ${d.raw_hex}`;
+  } catch (e) {
+    el.textContent = 'error';
+  }
+}
+
+async function sendNotify() {
+  const title = document.getElementById('notify-title').value;
+  const body = document.getElementById('notify-body').value;
+  const statusEl = document.getElementById('notify-status');
+  statusEl.textContent = 'enviando...';
+  statusEl.style.color = '#9aa0a8';
+  try {
+    const r = await fetch('/notify', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title, body}),
+    });
+    const d = await r.json();
+    if (d.sent) {
+      statusEl.textContent = `Write OK (payload: ${d.payload_hex}), pero NO se confirma que aparezca en pantalla — este formato ya se probó y no funcionó.`;
+      statusEl.style.color = '#e3b97b';
+    } else {
+      statusEl.textContent = `Error: ${d.error}`;
+      statusEl.style.color = '#f87171';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Error de red';
+    statusEl.style.color = '#f87171';
+  }
+}
+
+async function pollPresence() {
+  try {
+    const r = await fetch('/presence');
+    const d = await r.json();
+    const dot = document.getElementById('presence-dot');
+    const val = document.getElementById('presence-value');
+    const sub = document.getElementById('presence-sub');
+
+    if (!d.found || d.stale) {
+      dot.className = 'dot unknown';
+      val.textContent = d.stale ? 'sin señal reciente' : 'no detectado';
+    } else {
+      dot.className = 'dot ' + (d.near ? 'near' : 'far');
+      val.textContent = d.near ? 'CERCA' : 'LEJOS';
+    }
+    sub.textContent = `rssi: ${d.rssi ?? '—'} dBm · umbral: ${d.near_threshold_dbm} dBm · actualizado hace ${d.age_seconds}s`;
+
+    document.getElementById('paused-banner').style.display = d.paused ? 'block' : 'none';
+  } catch (e) {
+    // silent - keep last known state
+  }
+}
+
+loadBattery();
+loadActivity();
+setInterval(pollPresence, 3000);
+pollPresence();
+</script>
+</body>
+</html>
