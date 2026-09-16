@@ -185,7 +185,8 @@ async function pollPresence() {
       dot.className = 'dot ' + (d.near ? 'near' : 'far');
       val.textContent = d.near ? 'CERCA' : 'LEJOS';
     }
-    sub.textContent = `rssi: ${d.rssi ?? '—'} dBm · umbral: ${d.near_threshold_dbm} dBm · actualizado hace ${d.age_seconds}s`;
+    const age = d.age_seconds === null ? 'nunca' : `hace ${d.age_seconds}s`;
+    sub.textContent = `rssi: ${d.rssi ?? '—'} dBm · umbral: ${d.near_threshold_dbm} dBm · actualizado ${age}`;
 
     document.getElementById('paused-banner').style.display = d.paused ? 'block' : 'none';
   } catch (e) {

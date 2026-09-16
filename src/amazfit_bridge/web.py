@@ -111,13 +111,14 @@ async def get_activity():
 
 @app.get("/presence")
 async def get_presence():
+    age = presence_age_seconds()
     return {
         "found": presence_state.found,
         "rssi": presence_state.rssi,
         "near": presence_state.near,
         "paused": presence_state.paused,
-        "age_seconds": round(presence_age_seconds(), 1),
-        "stale": presence_age_seconds() > PRESENCE_STALE_AFTER_S,
+        "age_seconds": None if age == float("inf") else round(age, 1),
+        "stale": age > PRESENCE_STALE_AFTER_S,
         "near_threshold_dbm": PRESENCE_NEAR_THRESHOLD_DBM,
         "confirmed": False,
     }
