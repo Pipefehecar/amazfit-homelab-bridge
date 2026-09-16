@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Presencia oficina</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    font-family: system-ui, sans-serif;
+    transition: background-color 0.6s ease;
+    background: #1a1d24;
+  }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center;
+  }
+  body.in-office { background: #0d3b1f; }
+  body.out-office { background: #3b0d0d; }
+  body.unknown { background: #1a1d24; }
+
+  .label {
+    font-size: clamp(2.2rem, 10vw, 6rem);
+    font-weight: 900;
+    color: #fff;
+    letter-spacing: 0.02em;
+    text-shadow: 0 0 40px rgba(0,0,0,0.4);
+  }
+  .sub {
+    margin-top: 1.2rem;
+    font-size: clamp(1rem, 3vw, 1.4rem);
+    color: rgba(255,255,255,0.75);
+  }
+  .rssi {
+    margin-top: 0.6rem;
+    font-size: clamp(0.85rem, 2vw, 1.1rem);
+    color: rgba(255,255,255,0.5);
+  }
+  .stale-note {
+    margin-top: 1.5rem;
+    font-size: 0.9rem;
+    color: #fbbf24;
+    display: none;
+  }
+  body.stale .stale-note { display: block; }
+</style>
+</head>
+<body class="unknown">
+  <div class="label" id="label">—</div>
+  <div class="sub" id="sub">esperando señal...</div>
+  <div class="rssi" id="rssi"></div>
+  <div class="stale-note">⚠ sin lectura reciente — el reloj puede estar dormido, no necesariamente fuera</div>
+
+<script>
+// Empirically observed: rssi >= -74 dBm ≈ inside the office (per user testing).
+const OFFICE_THRESHOLD_DBM = -74;
+
+async function poll() {
+  try {
+    const r = await fetch('/presence');
+    const d = await r.json();
+
+    const body = document.body;
+    const label = document.getElementById('label');
+    const sub = document.getElementById('sub');
+    const rssiEl = document.getElementById('rssi');
+
+    body.classList.toggle('stale', !!d.stale);
+
+    if (!d.found || d.stale || d.rssi === null) {
+      body.className = 'unknown' + (d.stale ? ' stale' : '');
+      label.textContent = 'SIN SEÑAL';
+      sub.textContent = 'no se detecta el reloj ahora mismo';
+      rssiEl.textContent = '';
+      return;
+    }
+
+    const inOffice = d.rssi >= OFFICE_THRESHOLD_DBM;
+    body.className = inOffice ? 'in-office' : 'out-office';
+    label.textContent = inOffice ? 'DENTRO DE LA OFICINA' : 'FUERA DE LA OFICINA';
+    sub.textContent = `umbral: ${OFFICE_THRESHOLD_DBM} dBm`;
+    rssiEl.textContent = `rssi actual: ${d.rssi} dBm · actualizado hace ${d.age_seconds}s`;
+  } catch (e) {
+    // keep last known state on network hiccup
+  }
+}
+
+poll();
+setInterval(poll, 1500);
+</script>
+</body>
+</html>

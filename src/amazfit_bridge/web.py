@@ -78,6 +78,11 @@ async def presence_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "presence.html")
 
 
+@app.get("/office-page")
+async def office_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "office.html")
+
+
 @app.get("/battery")
 async def get_battery():
     async with BLE_LOCK:
