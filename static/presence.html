@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Presencia BLE — amazfit-homelab-bridge</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; background: #0f1115; color: #e6e6e6; }
+  h1 { font-size: 1.2rem; margin-bottom: 0.2rem; }
+  .sub { color: #9aa0a8; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  a.back { color: #7aa2f7; text-decoration: none; font-size: 0.85rem; }
+
+  .status-card { border: 1px solid #333; border-radius: 10px; padding: 1.5rem; background: #171a21; text-align: center; margin-bottom: 1.2rem; }
+  .status-dot { width: 16px; height: 16px; border-radius: 50%; display: inline-block; margin-right: 0.5rem; vertical-align: middle; }
+  .status-dot.near { background: #4ade80; box-shadow: 0 0 12px #4ade80; }
+  .status-dot.far { background: #f87171; }
+  .status-dot.unknown { background: #6b7280; }
+  .status-label { font-size: 2rem; font-weight: 800; vertical-align: middle; }
+
+  .meter-wrap { margin: 1.5rem 0 0.5rem; }
+  .meter-track { position: relative; height: 14px; border-radius: 8px; background: linear-gradient(90deg, #f87171 0%, #fbbf24 45%, #4ade80 100%); }
+  .meter-pointer { position: absolute; top: -6px; width: 4px; height: 26px; background: #fff; border-radius: 2px; box-shadow: 0 0 4px rgba(0,0,0,0.6); transition: left 0.4s ease; }
+  .meter-labels { display: flex; justify-content: space-between; font-size: 0.7rem; color: #9aa0a8; margin-top: 0.3rem; }
+
+  .rssi-value { font-size: 1.1rem; font-weight: 600; margin-top: 1rem; }
+  .threshold-note { font-size: 0.8rem; color: #9aa0a8; margin-top: 0.2rem; }
+
+  .history-card { border: 1px solid #333; border-radius: 10px; padding: 1rem; background: #171a21; margin-bottom: 1.2rem; }
+  .history-card h2 { margin: 0 0 0.7rem; font-size: 0.9rem; color: #9aa0a8; font-weight: 600; }
+
+  .controls { display: flex; gap: 0.6rem; align-items: center; margin-bottom: 1.2rem; }
+  .controls label { font-size: 0.85rem; color: #9aa0a8; }
+  input[type=range] { flex: 1; }
+
+  .warning { background: #4d3a1f; color: #e3b97b; padding: 0.6rem 1rem; border-radius: 6px; font-size: 0.8rem; margin-bottom: 1.2rem; display: none; }
+  .stale .warning { display: block; }
+</style>
+</head>
+<body>
+  <a class="back" href="/">&larr; volver a la demo</a>
+  <h1>Detección de presencia — RSSI en vivo</h1>
+  <div class="sub">Experimental. Escaneo pasivo cada ~6s; el reloj solo anuncia BLE unos segundos tras despertar pantalla, así que "sin señal" no siempre significa "lejos".</div>
+
+  <div id="warning-box" class="warning">⚠ Última lectura hace más de 30s — la señal puede estar perdida, no solo débil.</div>
+
+  <div class="status-card" id="status-card">
+    <span class="status-dot unknown" id="status-dot"></span>
+    <span class="status-label" id="status-label">—</span>
+
+    <div class="meter-wrap">
+      <div class="meter-track">
+        <div class="meter-pointer" id="meter-pointer" style="left: 50%;"></div>
+      </div>
+      <div class="meter-labels">
+        <span>lejos (-95 dBm)</span>
+        <span>cerca (-40 dBm)</span>
+      </div>
+    </div>
+
+    <div class="rssi-value" id="rssi-value">rssi: — dBm</div>
+    <div class="threshold-note" id="threshold-note"></div>
+  </div>
+
+  <div class="controls">
+    <label for="threshold-slider">Umbral cerca/lejos:</label>
+    <input type="range" id="threshold-slider" min="-95" max="-40" value="-70">
+    <span id="threshold-display">-70 dBm</span>
+  </div>
+
+  <div class="history-card">
+    <h2>Historial (últimas ~2 min)</h2>
+    <svg id="history-svg" width="100%" height="80" viewBox="0 0 300 80" preserveAspectRatio="none"></svg>
+  </div>
+
+<script>
+const RSSI_MIN = -95; // far edge of meter
+const RSSI_MAX = -40; // near edge of meter
+const HISTORY_LEN = 40;
+
+let history = []; // {t, rssi, found}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function rssiToPercent(rssi) {
+  const c = clamp(rssi, RSSI_MIN, RSSI_MAX);
+  return ((c - RSSI_MIN) / (RSSI_MAX - RSSI_MIN)) * 100;
+}
+
+function renderHistory() {
+  const svg = document.getElementById('history-svg');
+  const w = 300, h = 80;
+  if (history.length < 2) {
+    svg.innerHTML = '';
+    return;
+  }
+  const points = history.map((pt, i) => {
+    const x = (i / (HISTORY_LEN - 1)) * w;
+    const y = pt.rssi === null ? h : h - (rssiToPercent(pt.rssi) / 100) * h;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  svg.innerHTML = `
+    <polyline points="${points}" fill="none" stroke="#4ade80" stroke-width="2" />
+  `;
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/presence');
+    const d = await r.json();
+
+    const dot = document.getElementById('status-dot');
+    const label = document.getElementById('status-label');
+    const card = document.getElementById('status-card');
+    const pointer = document.getElementById('meter-pointer');
+    const rssiValue = document.getElementById('rssi-value');
+    const thresholdNote = document.getElementById('threshold-note');
+    const warningBox = document.getElementById('warning-box');
+
+    card.classList.toggle('stale', !!d.stale);
+
+    if (!d.found || d.stale) {
+      dot.className = 'status-dot unknown';
+      label.textContent = d.stale ? 'SIN SEÑAL' : 'NO DETECTADO';
+      rssiValue.textContent = 'rssi: — dBm';
+    } else {
+      dot.className = 'status-dot ' + (d.near ? 'near' : 'far');
+      label.textContent = d.near ? 'CERCA' : 'LEJOS';
+      rssiValue.textContent = `rssi: ${d.rssi} dBm`;
+      pointer.style.left = `${rssiToPercent(d.rssi)}%`;
+    }
+
+    thresholdNote.textContent = `umbral actual: ${d.near_threshold_dbm} dBm · actualizado hace ${d.age_seconds ?? '—'}s${d.paused ? ' · pausado (lock BLE en uso)' : ''}`;
+
+    history.push({ rssi: d.found && !d.stale ? d.rssi : null });
+    if (history.length > HISTORY_LEN) history.shift();
+    renderHistory();
+  } catch (e) {
+    // keep last known state on network hiccup
+  }
+}
+
+const slider = document.getElementById('threshold-slider');
+const thresholdDisplay = document.getElementById('threshold-display');
+let thresholdDebounce = null;
+
+slider.addEventListener('input', () => {
+  thresholdDisplay.textContent = `${slider.value} dBm`;
+  clearTimeout(thresholdDebounce);
+  thresholdDebounce = setTimeout(async () => {
+    try {
+      await fetch('/presence/threshold', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ near_threshold_dbm: parseInt(slider.value, 10) }),
+      });
+      poll();
+    } catch (e) {
+      // ignore - next poll will still reflect server's actual value
+    }
+  }, 300);
+});
+
+async function initThreshold() {
+  try {
+    const r = await fetch('/presence');
+    const d = await r.json();
+    if (typeof d.near_threshold_dbm === 'number') {
+      slider.value = d.near_threshold_dbm;
+      thresholdDisplay.textContent = `${d.near_threshold_dbm} dBm`;
+    }
+  } catch (e) {}
+}
+
+initThreshold();
+poll();
+setInterval(poll, 1500);
+</script>
+</body>
+</html>

@@ -18,6 +18,7 @@ class PresenceState:
     found: bool = False
     last_updated_ts: float = 0.0
     paused: bool = False
+    near_threshold_dbm: int = -70
 
 
 presence_state = PresenceState()

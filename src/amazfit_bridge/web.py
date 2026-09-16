@@ -29,7 +29,6 @@ STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
 
 PRESENCE_INTERVAL_S = 6.0
 PRESENCE_SCAN_BURST_S = 4.0
-PRESENCE_NEAR_THRESHOLD_DBM = -70
 PRESENCE_STALE_AFTER_S = 30.0
 
 
@@ -42,7 +41,7 @@ async def presence_loop(mac: str) -> None:
             async with BLE_LOCK:
                 try:
                     reading = await scan_for_rssi(
-                        mac, near_threshold_dbm=PRESENCE_NEAR_THRESHOLD_DBM, timeout=PRESENCE_SCAN_BURST_S
+                        mac, near_threshold_dbm=presence_state.near_threshold_dbm, timeout=PRESENCE_SCAN_BURST_S
                     )
                     presence_state.found = reading.found
                     presence_state.rssi = reading.rssi
@@ -72,6 +71,11 @@ app = FastAPI(title="amazfit-homelab-bridge demo", lifespan=lifespan)
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/presence-page")
+async def presence_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "presence.html")
 
 
 @app.get("/battery")
@@ -119,9 +123,23 @@ async def get_presence():
         "paused": presence_state.paused,
         "age_seconds": None if age == float("inf") else round(age, 1),
         "stale": age > PRESENCE_STALE_AFTER_S,
-        "near_threshold_dbm": PRESENCE_NEAR_THRESHOLD_DBM,
+        "near_threshold_dbm": presence_state.near_threshold_dbm,
         "confirmed": False,
     }
+
+
+class ThresholdRequest(BaseModel):
+    near_threshold_dbm: int
+
+
+@app.post("/presence/threshold")
+async def set_presence_threshold(req: ThresholdRequest):
+    presence_state.near_threshold_dbm = req.near_threshold_dbm
+    # Recompute "near" against the new threshold immediately, without
+    # waiting for the next scan burst, so the UI feels responsive.
+    if presence_state.rssi is not None:
+        presence_state.near = presence_state.rssi >= req.near_threshold_dbm
+    return {"near_threshold_dbm": presence_state.near_threshold_dbm}
 
 
 class NotifyRequest(BaseModel):
@@ -159,8 +177,11 @@ async def ws_hr(websocket: WebSocket):
             await client.write_gatt_char(control_char, bytes([0x15, 0x01, 0x01]))
             await stop_event.wait()
         finally:
-            await client.write_gatt_char(control_char, bytes([0x15, 0x01, 0x00]))
-            await client.stop_notify(hr_char)
+            try:
+                await client.write_gatt_char(control_char, bytes([0x15, 0x01, 0x00]))
+            except Exception:
+                logger.debug("Failed to disable continuous HR mode on ws cleanup", exc_info=True)
+            await sensors._stop_notify_quietly(client, hr_char)
 
     stop_event = asyncio.Event()
     reader_task = None

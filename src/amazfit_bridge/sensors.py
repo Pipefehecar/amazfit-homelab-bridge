@@ -111,9 +111,24 @@ async def read_hr_once(client: BleakClient, timeout: float = 30.0) -> int:
 
         await asyncio.wait_for(got_reading.wait(), timeout=timeout)
     finally:
-        await client.stop_notify(HR_MEASUREMENT_CHAR)
+        await _stop_notify_quietly(client, HR_MEASUREMENT_CHAR)
 
     return result["bpm"]
+
+
+async def _stop_notify_quietly(client: BleakClient, char_uuid: str) -> None:
+    """
+    client.stop_notify() raises BleakDBusError("No notify session started")
+    if notifications were never actually established (e.g. start_notify
+    failed, or a previous caller already tore them down on the same
+    persistent connection). That's a harmless no-op state, not a real
+    error - swallow it so cleanup in a `finally` never masks the actual
+    exception that triggered it.
+    """
+    try:
+        await client.stop_notify(char_uuid)
+    except Exception:
+        logger.debug("stop_notify(%s) failed - likely already stopped", char_uuid, exc_info=True)
 
 
 async def subscribe_hr_continuous(client: BleakClient, duration: float = 60.0) -> list[int]:
@@ -138,8 +153,11 @@ async def subscribe_hr_continuous(client: BleakClient, duration: float = 60.0) -
         await client.write_gatt_char(HR_CONTROL_POINT_CHAR, bytes([0x15, 0x01, 0x01]))
         await asyncio.sleep(duration)
     finally:
-        await client.write_gatt_char(HR_CONTROL_POINT_CHAR, bytes([0x15, 0x01, 0x00]))
-        await client.stop_notify(HR_MEASUREMENT_CHAR)
+        try:
+            await client.write_gatt_char(HR_CONTROL_POINT_CHAR, bytes([0x15, 0x01, 0x00]))
+        except Exception:
+            logger.debug("Failed to disable continuous HR mode on cleanup", exc_info=True)
+        await _stop_notify_quietly(client, HR_MEASUREMENT_CHAR)
 
     return readings
 
