@@ -58,22 +58,68 @@ refuse reads until the auth handshake is implemented — that's expected and
 is the next milestone, not a bug in this script.
 
 Reference for the handshake itself:
-[MyrikLD/amazfit_pyclient](https://github.com/MyrikLD/amazfit_pyclient)
-(built for the GTR4 over `bleak`; the GTS 2e uses the same Huami auth family
-but may need firmware-version-specific tweaks).
+[MyrikLD/amazfit_pyclient](https://github.com/MyrikLD/amazfit_pyclient) —
+**doesn't directly apply**: it targets the newer "chunked" protocol
+(GTR4/Zepp OS). The GTS 2e speaks the older classic Huami protocol (Mi Band
+3-6 era), implemented from scratch in `src/amazfit_bridge/auth.py` and
+verified end-to-end against the real watch.
+
+## Step 4 — sensor reads (validated against the real device)
+
+`src/amazfit_bridge/sensors.py`:
+- `read_battery()` — confirmed against the watch's own battery %.
+- `read_hr_once()` / `subscribe_hr_continuous()` — standard BLE Heart Rate
+  service, confirmed against the watch's live HR display.
+- `read_steps_today()` — steps/distance/calories, confirmed against a
+  recent step-count reset.
+- `send_notification()` — **experimental, tested and NOT working**: writes
+  to the standard Alert Notification Service (`0x2A46`/`0x1811`) succeed
+  with no BLE error, but nothing appears on the watch screen. Huami
+  firmware likely needs its own vendor notification format instead of
+  generic ANS — not yet reverse-engineered.
+- `read_activity_log()` — stub, not implemented. Stress score and sleep
+  phases aren't exposed as simple characteristics; they live behind a
+  multi-step binary "activity fetch" log protocol (`00000004`/`00000005`
+  under `fee0`) that hasn't been reverse-engineered yet.
+
+Try it directly:
+
+```bash
+python scripts/read_sensors.py                    # battery + HR once + steps
+python scripts/read_sensors.py --continuous-hr 60  # + 60s of live HR
+```
+
+## Step 5 — local web demo
+
+```bash
+uvicorn amazfit_bridge.web:app --reload
+```
+
+Opens a single-page dashboard (`static/index.html`) at `http://127.0.0.1:8000`:
+
+- Battery / HR (single + live via WebSocket) / activity panels — confirmed
+  working, wrap `sensors.py` over one persistent authenticated connection.
+- Presence panel — passive RSSI scan every ~6s, near/far by threshold.
+  Experimental; the watch only advertises briefly after screen-wake, so
+  "not found" doesn't reliably mean "far away."
+- Notification form — experimental, marked as not working in the UI (see
+  above); left in so the next attempt has a known-bad baseline.
+- A shared BLE lock serializes GATT operations against presence scanning
+  (one adapter can't do both at once); the UI shows a "presence paused"
+  banner whenever a sensor read or live HR session is holding the lock.
 
 ## Project layout
 
 ```
-src/amazfit_bridge/   # shared config/helpers, importable package
-scripts/              # one-off runnable steps (get key, scan, explore)
+src/amazfit_bridge/   # config, auth handshake, sensors, presence, web app
+scripts/              # one-off runnable steps (get key, scan, explore, read)
+static/               # single-page demo frontend
 .env.example          # template — copy to .env, never commit .env
 ```
 
 ## Roadmap (not implemented yet)
 
-- Huami auth handshake over bleak (adapted from amazfit_pyclient)
+- Working custom notifications (needs Huami's actual vendor format)
+- Activity-fetch log protocol for sleep phases / stress score
 - Data pipeline into InfluxDB + Grafana
-- BLE RSSI presence detection
-- Custom notifications sent to the watch
 - Dashboard correlating HR/activity with GitHub commits / calendar
