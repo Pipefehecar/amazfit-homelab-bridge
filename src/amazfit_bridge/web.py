@@ -8,7 +8,6 @@ Run with:
 """
 import asyncio
 import logging
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,37 +19,14 @@ from amazfit_bridge import sensors
 from amazfit_bridge.ble_state import BLE_LOCK, presence_age_seconds, presence_state
 from amazfit_bridge.config import load_watch_config
 from amazfit_bridge.connection import WatchConnection
-from amazfit_bridge.presence import scan_for_rssi
+from amazfit_bridge.presence import escanear_continuo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("amazfit_bridge.web")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
 
-PRESENCE_INTERVAL_S = 6.0
-PRESENCE_SCAN_BURST_S = 4.0
 PRESENCE_STALE_AFTER_S = 30.0
-
-
-async def presence_loop(mac: str) -> None:
-    while True:
-        if BLE_LOCK.locked():
-            presence_state.paused = True
-            logger.info("Presence scan skipped - BLE lock held by a GATT operation")
-        else:
-            async with BLE_LOCK:
-                try:
-                    reading = await scan_for_rssi(
-                        mac, near_threshold_dbm=presence_state.near_threshold_dbm, timeout=PRESENCE_SCAN_BURST_S
-                    )
-                    presence_state.found = reading.found
-                    presence_state.rssi = reading.rssi
-                    presence_state.near = reading.near
-                    presence_state.last_updated_ts = time.time()
-                    presence_state.paused = False
-                except Exception:
-                    logger.exception("Presence scan burst failed")
-        await asyncio.sleep(PRESENCE_INTERVAL_S)
 
 
 @asynccontextmanager
@@ -59,7 +35,12 @@ async def lifespan(app: FastAPI):
     app.state.config = config
     app.state.watch = WatchConnection(config)
 
-    task = asyncio.create_task(presence_loop(config.mac))
+    # Escaneo continuo en vez de ráfagas: antes se escaneaba 4s de cada
+    # 6s, dejando un hueco ciego de 2s por ciclo donde cualquier anuncio
+    # del reloj se perdía sin dejar rastro. Ese hueco, sumado a que el
+    # reloj solo anuncia unos segundos tras despertar pantalla, producía
+    # falsos "salió" seguidos de "entró" con el usuario quieto.
+    task = asyncio.create_task(escanear_continuo(config.mac, presence_state, BLE_LOCK))
     yield
     task.cancel()
     await app.state.watch.close()
